@@ -980,16 +980,27 @@ def absolute_cold_overrides(lead: dict[str, Any], bd: ScoreBreakdown,
     budget_lakhs = parse_budget_inr(budget_str)
     budget_inr   = budget_lakhs * 100_000
 
+    svcs = lead.get("service_required", [])
+    if isinstance(svcs, str): svcs = [s.strip() for s in svcs.split("|") if s.strip()]
+    n_svc = len(svcs)
+    bs = cfg.get("budget_sanity", {})
+    min_bl = bs.get(f"min_for_{min(n_svc, 3)}_service_l", bs.get("min_for_4plus_l", 4.0)) if n_svc >= 4 else bs.get(f"min_for_{n_svc}_service_l", 0.0)
+
     # Only trigger if a budget was actually provided (skip leads with no budget)
     has_budget = bool(budget_str and budget_str.lower() not in
                       ("", "not decided", "unknown", "n/a", "tbd"))
 
-    if has_budget and 0 < budget_inr <= prank_max_inr:
+    is_prank = has_budget and (
+        (0 < budget_inr <= prank_max_inr) or
+        (min_bl > 0 and budget_lakhs < min_bl and (budget_lakhs < 0.50 or budget_inr < 50000) and n_svc >= 2)
+    )
+
+    if is_prank:
         bd.prank_budget_triggered = True
         _zero_all_scores(bd)
         bd.rationale.insert(0,
-            f"[HARD KILL -- PRANK BUDGET] Declared budget of Rs.{budget_inr:,.0f} is below "
-            f"the minimum realistic threshold of Rs.{prank_max_inr:,.0f}. "
+            f"[HARD KILL -- PRANK BUDGET] Declared budget of ₹{budget_inr:,.0f} for {n_svc} services fails "
+            f"minimum realistic economic threshold (min req: ₹{min_bl*100000:,.0f}). "
             f"This is not a viable lead. Classified as COLD."
         )
         return True
@@ -1134,7 +1145,12 @@ def print_report(result: LeadResult) -> None:
     W    = 64
 
     def rule(c="-"): print(c * W)
-    def ln(t=""): print(t.encode("ascii", errors="replace").decode("ascii"))
+    def ln(t=""):
+        try:
+            print(str(t))
+        except UnicodeEncodeError:
+            safe = str(t).replace("₹", "Rs.").replace("—", "-")
+            print(safe.encode("ascii", errors="replace").decode("ascii"))
 
     rule("=")
     ln("  LEAD CLASSIFICATION REPORT")

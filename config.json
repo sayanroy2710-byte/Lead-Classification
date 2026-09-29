@@ -62,7 +62,7 @@
     "_comment": "Hard-kill rules that force COLD tier regardless of all other scores. (1) NI override: fires when the intent gate falls below ni_hard_gate OR the query/message semantic similarity to not-interested anchors exceeds ni_sim_threshold OR lexical disinterest patterns match. (2) Prank budget: fires when a budget is explicitly provided but its absolute INR value is ≤ prank_budget_max_inr — clearly not a serious lead.",
     "ni_hard_gate":         0.25,
     "ni_sim_threshold":     0.35,
-    "prank_budget_max_inr": 5000
+    "prank_budget_max_inr": 25000
   },
 
   "log_budget_duration": {
