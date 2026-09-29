@@ -111,7 +111,7 @@ TEMPLATES = {
         "message": "Investors have approved the budget. We want to onboard immediately. Have detailed BRD ready.",
         "project_description": "Society management: visitor gate, Razorpay maintenance, complaint ticketing, analytics dashboard.",
         "service_required": ["Mobile App Development", "Web Development", "Backend Development", "Cloud Infrastructure"],
-        "estimated_budget": "₹5,000 - ₹10,000",
+        "estimated_budget": "₹5,00,000 - ₹10,000",
         "project_duration": "3 months",
         "expected_start_date": "Within 1 month",
         "urgency": "High",
@@ -186,6 +186,46 @@ with st.sidebar:
     - **Economic Feasibility**: Ratio of $\\frac{\\log(\\text{Price})}{\\text{Duration}}$
     """)
     st.divider()
+
+    st.subheader("🤖 Qwen LLM for Negations")
+    qwen_mode = st.radio(
+        "Intent Reasoning Engine:",
+        ["⚡ Built-in Contrastive Semantic Engine", "☁️ Live Qwen LLM (Cloud / Ollama)"],
+        index=0,
+        help="Use Live Qwen to dynamically reason through complex negations (e.g. 'we don't want X, we want Y')."
+    )
+
+    llm_config = None
+    if "Live Qwen" in qwen_mode:
+        provider = st.selectbox(
+            "Qwen Provider",
+            ["Groq (Fastest Qwen 2.5)", "OpenRouter (Free Qwen 2.5)", "Hugging Face (Free Qwen 2.5)", "Local Ollama (localhost:11434)"]
+        )
+        api_key_default = ""
+        try:
+            if "groq" in provider.lower() and "GROQ_API_KEY" in st.secrets:
+                api_key_default = st.secrets["GROQ_API_KEY"]
+            elif "openrouter" in provider.lower() and "OPENROUTER_API_KEY" in st.secrets:
+                api_key_default = st.secrets["OPENROUTER_API_KEY"]
+            elif "hugging" in provider.lower() and "HF_TOKEN" in st.secrets:
+                api_key_default = st.secrets["HF_TOKEN"]
+        except Exception:
+            pass
+
+        if "ollama" not in provider.lower():
+            api_key_input = st.text_input("API Key (optional if in secrets)", value=api_key_default, type="password", help="Enter API key for live Qwen cloud inference.")
+            llm_config = {"provider": provider, "api_key": api_key_input}
+            if api_key_input:
+                st.success("🟢 Qwen Cloud Engine Active")
+            else:
+                st.info("💡 Add free API key above to query Qwen directly.")
+        else:
+            llm_config = {"provider": "ollama", "api_key": ""}
+            st.info("🟢 Local Ollama (Qwen 3) configured on `http://localhost:11434`.")
+    else:
+        st.caption("⚡ Built-in deterministic contrastive rules & semantic vector engine active.")
+
+    st.divider()
     st.subheader("🧪 Load Test Scenario")
     selected_template_name = st.selectbox(
         "Choose a pre-built lead scenario:",
@@ -221,14 +261,13 @@ with tab_single:
             decision_maker = st.checkbox("Contact is Confirmed Decision Maker", value=template.get("decision_maker", True))
 
             st.markdown("##### 💬 Inquiry Texts")
-            query = st.text_area("Client Query (Primary Intent Signal)", value=template.get("query", "We want full deployment as soon as possible."), height=70, help="The primary direct message or form question from the client.")
+            query = st.text_area("Client Query (Primary Intent Signal)", value=template.get("query", "we do not want website codes and files. We want full deployment."), height=70, help="The primary direct message or form question from the client.")
             message = st.text_area("Message / Additional Context", value=template.get("message", "Investors have approved our Q3 budget. Ready for onboarding."), height=70)
 
         with col2:
             st.markdown("##### 💼 Project Scope & Budget")
             all_services = ["Web Development", "Mobile App Development", "Backend Development", "Cloud Infrastructure", "UI/UX Design", "AI / ML Integration", "QA & Testing"]
-            default_services = template.get("service_required", ["Web Development", "Mobile App Development", "Backend Development"])
-            # Ensure valid defaults
+            default_services = template.get("service_required", ["Web Development", "Mobile App Development", "Backend Development", "Cloud Infrastructure"])
             valid_defaults = [s for s in default_services if s in all_services] or ["Web Development"]
             service_required = st.multiselect("Services Required", all_services, default=valid_defaults)
 
@@ -279,8 +318,8 @@ with tab_single:
             "lead_source": lead_source
         }
 
-        with st.spinner("Analyzing semantic vectors and economic feasibility..."):
-            result = engine.classify_lead(lead_dict, use_llm=True)
+        with st.spinner("Analyzing semantic vectors and negation nuances..."):
+            result = engine.classify_lead(lead_dict, use_llm=True, llm_config=llm_config)
 
         st.divider()
 
@@ -355,6 +394,8 @@ with tab_single:
                     st.error(r)
                 elif "[REJECTION" in r:
                     st.warning(r)
+                elif "[Qwen" in r:
+                    st.success(f"🤖 **Live Qwen Reasoning**: {r}")
                 elif "[Intent Engine]" in r or "[Semantic Engine]" in r:
                     st.info(r)
                 else:
@@ -398,7 +439,7 @@ with tab_batch:
 
                 leads_list = df_leads.to_dict(orient="records")
                 for i, ld in enumerate(leads_list):
-                    res = engine.classify_lead(ld, use_llm=False)
+                    res = engine.classify_lead(ld, use_llm=True, llm_config=llm_config)
                     scored_records.append({
                         "Lead ID": ld.get("lead_id", f"LD-{i+1}"),
                         "Name": ld.get("name", "N/A"),
@@ -439,17 +480,19 @@ with tab_docs:
     st.markdown("""
     This lead classification system solves the failure modes of traditional naive rule engines and uncalibrated models:
 
-    #### 1. Master Query Gating
-    - Direct queries like *"We have decided to go with another provider"* or *"We do not think your services are promising"* trigger **instant Rejection dampening** even if company size and budget are high.
-    - Contrastive statements like *"we do not want website codes and files. We want full deployment"* correctly isolate commercial demand instead of falsely flagging negation keywords.
+    #### 1. Master Query Gating & Contrastive Negation Handling
+    - **The Negation Problem**: Simple models get confused by phrases like *"we don't want website codes and files. We want full deployment"*, mistaking *"don't want"* for a cold rejection.
+    - **Dual Linguistic Resolution**:
+      1. **Live Qwen Integration**: Directly calls Qwen (via Cloud API or local Ollama) to reason through complex syntactic negations and contrastive scopes.
+      2. **Embedded Contrastive Engine**: A deterministic fallback that separates pure rejections from scope exclusions followed by positive commercial demands.
 
     #### 2. Economic Sanity & Prank Detection
-    - A common adversarial case is when a lead submits enterprise demands (e.g. Mobile App + Web + Backend + Cloud) with a micro-budget (e.g. ₹5,000–₹10,000) while writing *"Budget approved, ready to start"*.
-    - The engine computes the economic ratio:
+    - Detects adversarial or unrealistic submissions (e.g. ₹5,000 for 4 enterprise services with *"Budget approved, ready to start"*).
+    - Computes the economic ratio:
     """)
     st.latex(r"\text{Economic Ratio} = \frac{\ln(\text{Price}_{\text{INR}})}{\max(\text{Duration}_{\text{months}}, 1.0)}")
     st.markdown("""
-    - If budget is below economic viability for the requested service count ($< ₹50,000$ for multi-service), the lead is **automatically overridden to `[COLD]`** with an alert flag.
+    - Automatically overrides impossible offers to **`[COLD]`** with a prominent alert flag.
 
     #### 3. Stacking Ensemble Pipeline
     - **Feature Space (31 dimensions)**: Structured budget, size, urgency, source, start date, query anchor similarities, message similarities, and economic ratios.

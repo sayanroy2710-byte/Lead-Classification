@@ -4,7 +4,10 @@ model_engine.py
 Self-contained Industrial Lead Scoring and Classification Engine.
 Supports:
   - Sentence-Transformer Embeddings (all-MiniLM-L6-v2)
-  - Master Query Gating and Intent Analyzer
+  - Master Query Gating with Live Cloud Qwen & Ollama Support:
+      * Cloud Qwen via Groq, Hugging Face, or OpenRouter
+      * Local Qwen via Ollama (localhost:11434)
+      * Embedded Contrastive & Semantic Anchor Engine (100% self-contained fallback)
   - Economic Sanity and Prank Detection (log(price)/duration ratio)
   - Stacking Ensemble (RF + HGB + LR) with Isotonic Calibration
   - Automatic Artifact Caching (artifacts/lead_model.joblib)
@@ -14,8 +17,9 @@ import os
 import re
 import json
 import warnings
+import urllib.request
 from pathlib import Path
-from typing import Dict, Any, Tuple, List
+from typing import Dict, Any, Tuple, List, Optional
 
 import joblib
 import numpy as np
@@ -70,6 +74,77 @@ def sigmoid(x: float, k: float = 8.0) -> float:
     if kx > 100: return 1.0
     if kx < -100: return 0.0
     return 1.0 / (1.0 + np.exp(-kx))
+
+# ── Cloud Qwen / LLM Connector ─────────────────────────────────────────────────
+def query_qwen_cloud(query: str, api_key: str = "", provider: str = "groq") -> Optional[Dict[str, Any]]:
+    """
+    Call Qwen in the Cloud (Groq, OpenRouter, Hugging Face) or local Ollama
+    to perform deep linguistic reasoning and negation disambiguation.
+    """
+    system_prompt = (
+        "You are an expert B2B sales lead qualification AI. "
+        "Analyze the following client query to determine commercial intent. "
+        "Pay special attention to negations and contrastive scope (e.g., 'we don't want X, we want Y' is HIGH intent). "
+        "Respond ONLY with a valid JSON object with keys: "
+        "\"intent\": one of [\"HIGH_INTENT\", \"INQUIRY\", \"REJECTION\", \"COLD_EXPLORATORY\"], "
+        "\"confidence\": float between 0.0 and 1.0, "
+        "\"reason\": concise explanation of how negations or contrast were resolved."
+    )
+    user_prompt = f"Client Query: \"{query}\""
+
+    prov = provider.lower()
+    if "groq" in prov:
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        model = "qwen-2.5-32b"
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    elif "openrouter" in prov:
+        url = "https://openrouter.ai/api/v1/chat/completions"
+        model = "qwen/qwen-2.5-7b-instruct:free"
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    elif "hugging" in prov:
+        url = "https://router.huggingface.co/hf-inference/v1/chat/completions"
+        model = "Qwen/Qwen2.5-7B-Instruct"
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    elif "ollama" in prov:
+        url = "http://localhost:11434/v1/chat/completions"
+        model = "qwen3:0.6b"
+        headers = {"Content-Type": "application/json"}
+    else:
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        model = "qwen-2.5-32b"
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        "temperature": 0.0,
+        "max_tokens": 150
+    }
+
+    try:
+        data_bytes = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(url, data=data_bytes, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=6) as response:
+            res_data = json.loads(response.read().decode("utf-8"))
+            content = res_data["choices"][0]["message"]["content"]
+            match = re.search(r"\{.*\}", content, re.DOTALL)
+            if match:
+                parsed = json.loads(match.group(0))
+                intent = str(parsed.get("intent", "")).upper()
+                if intent in ["HIGH_INTENT", "INQUIRY", "REJECTION", "COLD_EXPLORATORY"]:
+                    return {
+                        "intent": intent,
+                        "confidence": float(parsed.get("confidence", 0.95)),
+                        "reason": str(parsed.get("reason", "")),
+                        "source": f"Qwen LLM ({model})"
+                    }
+    except Exception:
+        pass
+
+    return None
 
 # ── Anchors ───────────────────────────────────────────────────────────────────
 REJECTION_ANCHORS = [
@@ -152,10 +227,22 @@ class LeadScoringEngine:
         self.model = None
         self.load_or_train()
 
-    def query_intent_analyzer(self, query: str) -> Dict[str, Any]:
+    def query_intent_analyzer(self, query: str, llm_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         q = str(query).strip()
         if not q:
             return {'intent': 'NEUTRAL', 'confidence': 0.50, 'reason': 'Empty query', 'source': 'Intent Engine'}
+
+        # ── 1. Try Live Qwen (Cloud API or Local Ollama) if configured ────────
+        if llm_config and (llm_config.get("api_key") or "ollama" in str(llm_config.get("provider", "")).lower()):
+            qwen_res = query_qwen_cloud(
+                query=q,
+                api_key=llm_config.get("api_key", ""),
+                provider=llm_config.get("provider", "groq")
+            )
+            if qwen_res:
+                return qwen_res
+
+        # ── 2. Native Contrastive & Semantic Engine (Self-contained) ─────────
         q_lower = q.lower()
 
         rejection_regexes = [
@@ -266,7 +353,7 @@ class LeadScoringEngine:
             g * b_log, g * urg_o, g * is_dm,
         ], dtype=np.float32)
 
-    def compute_query_gate(self, lead: Dict[str, Any], check_llm: bool = True):
+    def compute_query_gate(self, lead: Dict[str, Any], check_llm: bool = True, llm_config: Optional[Dict[str, Any]] = None):
         q_text = str(lead.get('query', '')).strip()
         m_text = str(lead.get('message', '')).strip()
 
@@ -281,7 +368,7 @@ class LeadScoringEngine:
             q_kw  = query_keyword_net(q_text)
 
             if check_llm:
-                llm_res = self.query_intent_analyzer(q_text)
+                llm_res = self.query_intent_analyzer(q_text, llm_config=llm_config)
                 intent = llm_res.get('intent')
                 if intent in ['INTERESTED', 'HIGH_INTENT']:
                     q_hi = max(q_hi, 0.45)
@@ -317,8 +404,8 @@ class LeadScoringEngine:
         m_sims = np.array([m_hi, m_lo, m_urg, m_com],              dtype=np.float32)
         return gate, q_sims, q_vec, m_sims, m_vec, llm_res
 
-    def extract_all_features(self, lead: Dict[str, Any], check_llm: bool = False) -> np.ndarray:
-        gate, q_sims, q_vec, m_sims, m_vec, _ = self.compute_query_gate(lead, check_llm=check_llm)
+    def extract_all_features(self, lead: Dict[str, Any], check_llm: bool = False, llm_config: Optional[Dict[str, Any]] = None) -> np.ndarray:
+        gate, q_sims, q_vec, m_sims, m_vec, _ = self.compute_query_gate(lead, check_llm=check_llm, llm_config=llm_config)
         struct = self.extract_structured(lead, intent_gate=gate)
 
         d_text = str(lead.get('project_description', '')).strip()
@@ -395,10 +482,10 @@ class LeadScoringEngine:
         joblib.dump({'svd': self.svd, 'model': self.model}, self.artifacts_path)
         print(f'Model trained and saved to {self.artifacts_path}.')
 
-    def classify_lead(self, lead: Dict[str, Any], use_llm: bool = True) -> Dict[str, Any]:
+    def classify_lead(self, lead: Dict[str, Any], use_llm: bool = True, llm_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         embed_start = 16 + 1 + 6 + 4 + 4  # 31
-        gate, q_sims, _, m_sims, _, llm_res = self.compute_query_gate(lead, check_llm=use_llm)
-        raw = self.extract_all_features(lead, check_llm=use_llm).reshape(1, -1)
+        gate, q_sims, _, m_sims, _, llm_res = self.compute_query_gate(lead, check_llm=use_llm, llm_config=llm_config)
+        raw = self.extract_all_features(lead, check_llm=use_llm, llm_config=llm_config).reshape(1, -1)
         
         struct_part = raw[:, :embed_start]
         embed_part  = self.svd.transform(raw[:, embed_start:])
