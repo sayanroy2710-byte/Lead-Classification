@@ -25,7 +25,7 @@ import joblib
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from sklearn.decomposition import TruncatedSVD
-from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassifier, StackingClassifier
+from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassifier, StackingClassifier, VotingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.model_selection import train_test_split
@@ -445,7 +445,59 @@ class LeadScoringEngine:
             all_leads = json.load(fh)
         labeled = [ld for ld in all_leads if ld.get('label') in LABEL_MAP]
 
-        X_raw = np.array([self.extract_all_features(ld, check_llm=False) for ld in labeled])
+        queries = [str(ld.get('query', '')).strip() for ld in labeled]
+        messages = [str(ld.get('message', '')).strip() for ld in labeled]
+        descriptions = [str(ld.get('project_description', '')).strip() for ld in labeled]
+
+        q_vecs = self.encoder.encode(queries, batch_size=64, normalize_embeddings=True, show_progress_bar=False)
+        m_vecs = self.encoder.encode(messages, batch_size=64, normalize_embeddings=True, show_progress_bar=False)
+        d_vecs = self.encoder.encode(descriptions, batch_size=64, normalize_embeddings=True, show_progress_bar=False)
+
+        features_list = []
+        for i, ld in enumerate(labeled):
+            q_v = q_vecs[i] if queries[i] else np.zeros(EMBED_DIM, dtype=np.float32)
+            m_v = m_vecs[i] if messages[i] else np.zeros(EMBED_DIM, dtype=np.float32)
+            d_v = d_vecs[i] if descriptions[i] else np.zeros(EMBED_DIM, dtype=np.float32)
+
+            q_text = queries[i]
+            if q_text:
+                q_hi = max(float(np.dot(q_v, v)) for v in self.hi_vecs)
+                q_lo = max(float(np.dot(q_v, v)) for v in self.cld_vecs)
+                q_ni = max(float(np.dot(q_v, v)) for v in self.rej_vecs)
+                q_urg = 0.5; q_com = 0.5
+                q_kw = query_keyword_net(q_text)
+                q_net = (q_hi - q_lo) + 0.25 * q_urg + 0.20 * q_kw - 0.60 * q_ni
+            else:
+                q_hi = q_lo = q_urg = q_com = q_ni = q_kw = 0.0
+                q_net = 0.0
+
+            m_text = messages[i]
+            if m_text:
+                m_hi = max(float(np.dot(m_v, v)) for v in self.hi_vecs)
+                m_lo = max(float(np.dot(m_v, v)) for v in self.cld_vecs)
+                m_ni = max(float(np.dot(m_v, v)) for v in self.rej_vecs)
+                m_urg = 0.5; m_com = 0.5
+                m_net = (m_hi - m_lo) + 0.15 * m_urg - 0.40 * m_ni
+            else:
+                m_hi = m_lo = m_urg = m_com = m_ni = 0.0
+                m_net = 0.0
+
+            gate = float(sigmoid(0.75 * q_net + 0.25 * m_net, 8.0))
+            q_sims = np.array([q_hi, q_lo, q_urg, q_com, q_kw, q_ni], dtype=np.float32)
+            m_sims = np.array([m_hi, m_lo, m_urg, m_com], dtype=np.float32)
+            d_sims = np.array([0.5, 0.2, 0.6, 0.2] if descriptions[i] else [0, 0, 0, 0], dtype=np.float32)
+
+            struct = self.extract_structured(ld, intent_gate=gate)
+            m_vec_scaled = m_v * gate if gate < 0.35 else m_v
+            d_vec_scaled = d_v * gate if gate < 0.35 else d_v
+
+            feat = np.concatenate([
+                struct, [gate], q_sims, m_sims, d_sims,
+                q_v.astype(np.float32), m_vec_scaled.astype(np.float32), d_vec_scaled.astype(np.float32)
+            ])
+            features_list.append(feat)
+
+        X_raw = np.array(features_list)
         y = np.array([LABEL_MAP[ld['label']] for ld in labeled])
         leads_arr = np.array(labeled, dtype=object)
 
