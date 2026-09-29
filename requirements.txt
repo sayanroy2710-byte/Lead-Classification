@@ -1,0 +1,9 @@
+# Lead Scoring & Classification Dashboard — Online Deployment Requirements
+streamlit>=1.30.0
+sentence-transformers>=3.0.0
+torch
+scikit-learn>=1.4.0
+numpy
+pandas
+plotly
+joblib
