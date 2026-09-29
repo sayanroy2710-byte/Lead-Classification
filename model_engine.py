@@ -465,24 +465,17 @@ class LeadScoringEngine:
         X_train = apply_svd(X_train_raw)
         X_val   = apply_svd(X_val_raw)
 
-        rf_pipe = Pipeline([('sc', StandardScaler()), ('clf', RandomForestClassifier(n_estimators=300, min_samples_leaf=2, class_weight='balanced', random_state=SEED, n_jobs=-1))])
-        hgb_pipe = Pipeline([('sc', StandardScaler()), ('clf', HistGradientBoostingClassifier(max_iter=200, learning_rate=0.05, max_depth=6, random_state=SEED))])
-        lr_pipe = Pipeline([('sc', StandardScaler()), ('clf', LogisticRegression(C=0.3, max_iter=2000, class_weight='balanced', random_state=SEED))])
+        rf_pipe = Pipeline([('sc', StandardScaler()), ('clf', RandomForestClassifier(n_estimators=40, max_depth=8, class_weight='balanced', random_state=SEED, n_jobs=1))])
+        hgb_pipe = Pipeline([('sc', StandardScaler()), ('clf', HistGradientBoostingClassifier(max_iter=40, max_depth=5, learning_rate=0.08, random_state=SEED))])
+        lr_pipe = Pipeline([('sc', StandardScaler()), ('clf', LogisticRegression(C=0.5, max_iter=300, class_weight='balanced', random_state=SEED))])
 
-        rf_pipe.fit(X_train, y_train)
-        hgb_pipe.fit(X_train, y_train)
-        lr_pipe.fit(X_train, y_train)
-
-        meta_lr = LogisticRegression(C=1.0, max_iter=2000, random_state=SEED)
-        stacking_clf = StackingClassifier(estimators=[('rf', rf_pipe), ('hgb', hgb_pipe), ('lr', lr_pipe)], final_estimator=meta_lr, cv=5, stack_method='predict_proba', n_jobs=-1)
-        stacking_clf.fit(X_train, y_train)
-
-        self.model = CalibratedClassifierCV(stacking_clf, method='isotonic', cv='prefit')
-        self.model.fit(X_val, y_val)
+        ensemble = VotingClassifier(estimators=[('rf', rf_pipe), ('hgb', hgb_pipe), ('lr', lr_pipe)], voting='soft')
+        ensemble.fit(X_train, y_train)
+        self.model = ensemble
 
         # Save artifacts
         self.artifacts_path.parent.mkdir(parents=True, exist_ok=True)
-        joblib.dump({'svd': self.svd, 'model': self.model}, self.artifacts_path)
+        joblib.dump({'svd': self.svd, 'model': self.model}, self.artifacts_path, compress=3, protocol=4)
         print(f'Model trained and saved to {self.artifacts_path}.')
 
     def classify_lead(self, lead: Dict[str, Any], use_llm: bool = True, llm_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
