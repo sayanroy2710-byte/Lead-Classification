@@ -430,12 +430,15 @@ class LeadScoringEngine:
 
     def load_or_train(self):
         if self.artifacts_path.exists():
-            print(f'Loading cached model from {self.artifacts_path} ...')
-            data = joblib.load(self.artifacts_path)
-            self.svd = data['svd']
-            self.model = data['model']
-            print('Model loaded successfully.')
-            return
+            try:
+                print(f'Loading cached model from {self.artifacts_path} ...')
+                data = joblib.load(self.artifacts_path)
+                self.svd = data['svd']
+                self.model = data['model']
+                print('Model loaded successfully.')
+                return
+            except Exception as e:
+                print(f'Warning: Could not unpickle cached artifacts ({e}). Retraining natively in current environment...')
 
         print(f'Training new model on {self.dataset_path} ...')
         with open(self.dataset_path, encoding='utf-8') as fh:
